@@ -1,37 +1,26 @@
-import inquirer from 'inquirer'
-import fs from 'fs'
-import ytdl from 'ytdl-core'
 import chalk from 'chalk'
+import { randomUUID } from 'crypto'
+import fs from 'fs'
+import inquirer from 'inquirer'
+import fetch from 'node-fetch'
+import ytdl from 'ytdl-core'
 
-function init() {
+function init () {
     inquirer.prompt([
         {
             name: 'videoUrl',
             message: chalk.blue('Digite a url do vídeo:'),
             prefix: '>>'
         },
-        {
-            name: 'nameMusic',
-            message: chalk.blue('Nome da música:'),
-            prefix: '>>'
-        },
-        {
-            type: 'list',
-            name: 'folderMusic',
-            message: chalk.blue('Local da música:'),
-            choices: ['Arquivo existente', 'Novo arquivo'],
-            prefix: '>>'
-        }
     ]).then(async (answers) => {
         const regUrl = /^https?:\/\/(?:www\.)?[-a-zA-Z0-9@:%._\+~#=]{1,256}\.[a-zA-Z0-9()]{1,6}\b(?:[-a-zA-Z0-9()@:%_\+.~#?&\/=]*)$/
 
         const url = answers.videoUrl
         if (!regUrl.test(url)) throw new Error('Url inválida!')
 
-        const name = answers.nameMusic.toLowerCase().replaceAll(' ', '-')
-        if (!name) throw new Error('Nome é obrigatório!')
+        const name = await getNameByUrlMusic(url)
 
-        const folder = await folderMusics(answers.folderMusic)
+        const folder = await chooseDestinationFolderForTheFiles()
         
         uploadMusic(url, name, folder)
     }).catch(error => {
@@ -40,70 +29,115 @@ function init() {
     })
 }
 
-async function folderMusics (option) {
-    let folderName = ''
+async function chooseDestinationFolderForTheFiles () {
+    let nameFolder = ''
+    const optionsFile = ['Arquivo existente', 'Criar arquivo']
 
-    try {
-        if (option.toLowerCase().includes('existente')) {
+    await inquirer.prompt([
+        {
+            type: 'list',
+            name: 'optionsFileDestination',
+            message: chalk.blue('Onde enviar os arquivos?'),
+            prefix: '>>',
+            choices: optionsFile
+        }
+    ])
+    .then(async res => {
+        const existingFiles = []
+
+        if (res.optionsFileDestination === optionsFile[0]) {
             const dirPath = '../Baixar-videos-YT'
-            const folders = []
-    
             fs.readdirSync(dirPath).forEach(file => {
-                if (fs.statSync(file).isDirectory() && file !== 'node_modules') {
-                    folders.push(file)
+                if (fs.statSync(file).isDirectory() && file !== 'node_modules' && file !== '.git') {
+                    existingFiles.push(file)
                 }
             })
-    
-            await inquirer
-                .prompt([
-                    {
-                        type: 'list',
-                        name: 'selectFolder',
-                        choices: folders,
-                        message: 'Para onde a música vai? '
-                    }
-                ])
-                .then(data => {
-                    folderName = `./${data.selectFolder}`
-                })
-        } else {
-            await inquirer
-                .prompt([
-                    {
-                        name: 'newFolderName',
-                        message: chalk.blue('Qual é o nome da nova pasta? '),
-                        prefix: '>>'
-                    }
-                ])
-                .then(async (data) => {
-                    folderName = `./${data.newFolderName}`
-                    if (fs.existsSync(folderName)) {
-                        console.log('\n Diretório já existente, deseja direcionar para ele? \n')
-                        await inquirer
-                            .prompt([
-                                {
-                                    type: 'list',
-                                    name: 'redirectFolder',
-                                    message: chalk.cyan('Diretório já existente, deseja direcionar para ele?'),
-                                    choices: ['Sim', 'Não']
-                                }
-                            ]).then(result => {
-                                if(result.redirectFolder === 'Não') {
-                                    return folderMusics(option)
-                                }
-                            })
-                    }else {
-                        fs.mkdirSync(folderName)
-                    }
-                })
         }
-    } catch (error) {
-        console.log(chalk.red('\n', error.message, '\n'))
-        process.exit()
+
+        nameFolder = await definitionFile(existingFiles)
+    })
+
+    return nameFolder
+
+}
+
+async function definitionFile (listFileNames) {
+    let nameFolder = ''
+    if(listFileNames.length > 0) {
+        await inquirer.prompt([
+            {
+                type: 'list',
+                choices: listFileNames,
+                message: chalk.blue('Escolha o arquivo de destino'),
+                prefix: '>>',
+                name: 'nameFile',
+            }
+        ])
+        .then(res => {
+            nameFolder = `./${res.nameFile}`
+        })
+    } else {
+
+        let checkExistingFile = true
+        while(checkExistingFile) {
+            await inquirer.prompt([
+                {
+                    name: 'nameFile',
+                    message: chalk.blue('Nome do arquivo'),
+                    prefix: '>>'
+                }
+            ])
+            .then(async (dataName) => {
+                if (fs.existsSync(`./${dataName.nameFile}`)) {
+                    console.log('Arquivo existente')
+                    await inquirer.prompt([
+                        {
+                            type: 'list',
+                            name: 'redirectFile',
+                            message: chalk.gray('Redirecionar para o arquivo?'),
+                            choices: ['Sim', 'Não']
+                        }
+                    ])
+                    .then(res => {
+                        if(res.redirectFile.toLowerCase() === 'sim') {
+                            nameFolder = `./${dataName.nameFile}`
+                            checkExistingFile = false
+                        } else {
+                            checkExistingFile = true
+                        }
+                    })
+                } else {
+                    fs.mkdirSync(`./${dataName.nameFile}`)
+                    nameFolder = `./${dataName.nameFile}`
+                    checkExistingFile = false 
+                }
+            })
+        }        
     }
 
-    return folderName
+    return nameFolder
 
+}
+
+async function getNameByUrlMusic (url) {
+
+    const response = await fetch(url)
+    const html = await response.text()
+    const title = html.match(/<title>(.*?)<\/title>/)[1]
+
+    let formatTitle = 
+        title
+            .replace(' - YouTube', '')
+            .toLowerCase()
+            .replaceAll(' ', '-')
+            .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+            .replaceAll(/[^a-zA-Z0-9\-]+/g,'', '')
+            .replaceAll('--', '-')
+            .replaceAll('---', '-')
+
+    formatTitle += `-${randomUUID().slice(0, 8)}`
+
+    return formatTitle
 }
 
 function uploadMusic (url, name, folder) {
@@ -116,7 +150,7 @@ function uploadMusic (url, name, folder) {
         .pipe(writeStream)
 
     writeStream.on('finish', () => {
-        console.log(chalk.green('\nMúsica baixada\n'))
+        console.log(chalk.green('Música baixada\n'))
         process.exit()
     })
 }
